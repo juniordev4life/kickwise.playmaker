@@ -1,0 +1,44 @@
+{
+  "name": "kickwise-playmaker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kickwise API Gateway. Handles JWT sessions, orchestrates Winger and BigQuery, and serves the Striker.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch --env-file=.env.local src/index.js",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome check --write .",
+    "lint:check": "biome check .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check --write .",
+    "check:ci": "biome check .",
+    "security:audit": "npm audit --audit-level=high",
+    "firestore:emulator": "firebase emulators:start --only firestore"
+  },
+  "dependencies": {
+    "@fastify/autoload": "^6.0.0",
+    "@fastify/cookie": "^11.0.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/jwt": "^9.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@google-cloud/bigquery": "^7.9.0",
+    "@google-cloud/firestore": "^7.10.0",
+    "fastify": "^5.0.0",
+    "pino-pretty": "^11.0.0",
+    "undici": "^7.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@vitest/coverage-v8": "^2.0.0",
+    "nock": "^14.0.0",
+    "vitest": "^2.0.0"
+  }
+}
