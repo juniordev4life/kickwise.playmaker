@@ -31,7 +31,8 @@ export function getJwtConfig() {
     secret: secret ?? "dev-only-fallback-secret",
     cookieName: process.env.COOKIE_NAME ?? "kickwise_token",
     ttlDays: Number.parseInt(process.env.JWT_TTL_DAYS ?? "30", 10),
-    cookieSecure: (process.env.COOKIE_SECURE ?? (isProd ? "true" : "false")).toLowerCase() === "true",
+    cookieSecure:
+      (process.env.COOKIE_SECURE ?? (isProd ? "true" : "false")).toLowerCase() === "true",
     cookieDomain: process.env.COOKIE_DOMAIN || undefined,
     cookieSameSite: (process.env.COOKIE_SAMESITE ?? (isProd ? "none" : "lax")).toLowerCase()
   };
