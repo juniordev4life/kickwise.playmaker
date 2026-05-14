@@ -40,7 +40,7 @@ export const loginController = {
         path: "/",
         httpOnly: true,
         secure: cookieConfig.cookieSecure,
-        sameSite: "lax",
+        sameSite: cookieConfig.cookieSameSite,
         domain: cookieConfig.cookieDomain,
         maxAge: cookieConfig.ttlDays * 24 * 60 * 60
       });
@@ -65,7 +65,7 @@ export const logoutController = {
         path: "/",
         httpOnly: true,
         secure: cookieConfig.cookieSecure,
-        sameSite: "lax",
+        sameSite: cookieConfig.cookieSameSite,
         domain: cookieConfig.cookieDomain,
         maxAge: 0
       });
