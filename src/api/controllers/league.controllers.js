@@ -22,8 +22,16 @@ export const getLeagueRankingController = {
 export const getMyLeaguesController = {
   handler: async (request, reply) => {
     try {
-      const leagues = request.user.profile?.leagues ?? [];
-      return setGeneralResponse(reply, 200, "Success", "Leagues", { leagues });
+      // Kickbase's login response doesn't include the user's leagues — those
+      // live behind a separate /v4/leagues/selection call. We fetch them live
+      // on every request so the user always sees freshly joined/left leagues.
+      const data = await callWinger({
+        method: "GET",
+        path: "/api/v1/kickbase/leagues",
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Leagues", data);
     } catch (error) {
       return handleErrorResponse(reply, error, request);
     }
