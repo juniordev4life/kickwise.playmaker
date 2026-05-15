@@ -13,7 +13,7 @@ const POSITION_ORDER = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
 export const getActiveArenaChallengesController = {
   handler: async (request, reply) => {
     try {
-      const [selection, overview] = await Promise.all([
+      const [selection, overview, live, lobby] = await Promise.all([
         callWinger({
           method: "GET",
           path: "/api/v1/kickbase/challenges/selection",
@@ -25,12 +25,50 @@ export const getActiveArenaChallengesController = {
           path: "/api/v1/kickbase/challenges/overview",
           kbToken: request.user.kbToken,
           log: request.log
+        }).catch((err) => ({ error: err.message })),
+        callWinger({
+          method: "GET",
+          path: "/api/v1/kickbase/challenges/live",
+          kbToken: request.user.kbToken,
+          log: request.log
+        }).catch((err) => ({ error: err.message })),
+        callWinger({
+          method: "GET",
+          path: "/api/v1/kickbase/challenges/lobby",
+          kbToken: request.user.kbToken,
+          log: request.log
         }).catch((err) => ({ error: err.message }))
       ]);
       return setGeneralResponse(reply, 200, "Success", "Arena challenges", {
         selection,
-        overview
+        overview,
+        live,
+        lobby
       });
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
+export const getArenaChallengeProfileController = {
+  schema: {
+    params: {
+      type: "object",
+      required: ["challengeId"],
+      properties: { challengeId: { type: "string", minLength: 1 } }
+    }
+  },
+  handler: async (request, reply) => {
+    try {
+      const { challengeId } = request.params;
+      const data = await callWinger({
+        method: "GET",
+        path: `/api/v1/kickbase/challenges/${encodeURIComponent(challengeId)}/profile`,
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Challenge profile", data ?? {});
     } catch (error) {
       return handleErrorResponse(reply, error, request);
     }

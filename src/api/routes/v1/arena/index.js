@@ -1,6 +1,7 @@
 import {
   getActiveArenaChallengesController,
   getArenaChallengeOverviewController,
+  getArenaChallengeProfileController,
   submitArenaLineupController
 } from "../../../controllers/arena.controllers.js";
 import { requireUser } from "../../../middlewares/requireUser.middlewares.js";
@@ -9,6 +10,12 @@ export default async function arenaRoutes(fastify) {
   fastify.get("/challenges", {
     preHandler: [requireUser],
     handler: getActiveArenaChallengesController.handler
+  });
+
+  fastify.get("/:challengeId/profile", {
+    schema: getArenaChallengeProfileController.schema,
+    preHandler: [requireUser],
+    handler: getArenaChallengeProfileController.handler
   });
 
   fastify.get("/:challengeId/overview", {
