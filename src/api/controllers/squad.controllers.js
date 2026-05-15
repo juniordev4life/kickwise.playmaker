@@ -5,6 +5,7 @@ import {
   buildBudgetLineup,
   buildOptimizedLineup,
   FORMATIONS,
+  listAlternatives,
   RISK_PROFILES
 } from "../services/lineup.services.js";
 import { callWinger } from "../services/winger.services.js";
@@ -130,6 +131,67 @@ export const getBudgetLineupController = {
         log: request.log
       });
       return setGeneralResponse(reply, 200, "Success", "Budget lineup", result);
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
+const alternativesQuerySchema = {
+  type: "object",
+  required: ["position"],
+  properties: {
+    position: { type: "string", enum: ["GK", "DEF", "MID", "FWD"] },
+    matchday: { type: "integer", minimum: 1, maximum: 34 },
+    seasonId: { type: "string", pattern: "^\\d{4}/\\d{4}$" },
+    maxBudget: { type: "integer", minimum: 0 },
+    excludePlayerIds: { type: "string" },
+    riskProfile: { type: "string", enum: Object.keys(RISK_PROFILES) },
+    limit: { type: "integer", minimum: 1, maximum: 50 }
+  }
+};
+
+/**
+ * GET /api/v1/lineup/alternatives — top-N replacement candidates for a
+ * single position, optionally constrained by a per-player market-value
+ * cap. Designed for the "click a slot → swap him" UI.
+ */
+export const getAlternativesController = {
+  schema: { querystring: alternativesQuerySchema },
+  handler: async (request, reply) => {
+    try {
+      let seasonId = request.query.seasonId;
+      let matchday = request.query.matchday;
+      if (!seasonId) {
+        const current = await getCurrentSeason();
+        seasonId = current?.season_id;
+      }
+      if (!matchday && seasonId) {
+        matchday = await getCurrentMatchday(seasonId);
+      }
+      if (!seasonId || !matchday) {
+        return setGeneralResponse(
+          reply,
+          404,
+          "Not Found",
+          "No current season / matchday available.",
+          {}
+        );
+      }
+      const excludePlayerIds = request.query.excludePlayerIds
+        ? String(request.query.excludePlayerIds).split(",").filter(Boolean)
+        : [];
+      const result = await listAlternatives({
+        seasonId,
+        matchday,
+        position: request.query.position,
+        maxBudget: request.query.maxBudget,
+        excludePlayerIds,
+        riskProfileKey: request.query.riskProfile ?? "balanced",
+        limit: request.query.limit ?? 20,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Alternatives", result);
     } catch (error) {
       return handleErrorResponse(reply, error, request);
     }

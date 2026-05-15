@@ -771,6 +771,126 @@ export async function buildBudgetLineup({
   };
 }
 
+/**
+ * List candidate replacement players for a single slot. Used by the
+ * "click a player → swap him" UI: filters all active Bundesliga players to
+ * the same position and below a market-value cap, returns them sorted by
+ * projected expected points (with the chosen risk profile applied).
+ *
+ * @param {object} args
+ * @param {string} args.seasonId
+ * @param {number} args.matchday
+ * @param {string} args.position GK | DEF | MID | FWD
+ * @param {number} [args.maxBudget] max market value per player in €
+ * @param {Array<string|number>} [args.excludePlayerIds] players already on the pitch
+ * @param {string} [args.riskProfileKey]
+ * @param {number} [args.limit=20]
+ * @param {import("fastify").FastifyBaseLogger} [args.log]
+ * @returns {Promise<{seasonId: string, matchday: number, position: string,
+ *   alternatives: Array<object>}>}
+ */
+export async function listAlternatives({
+  seasonId,
+  matchday,
+  position,
+  maxBudget,
+  excludePlayerIds = [],
+  riskProfileKey = "balanced",
+  limit = 20,
+  log
+}) {
+  const [allPlayers, matchdayFixtures, teamIdByName, formStats] = await Promise.all([
+    loadAllBundesligaPlayers(),
+    loadMatchdayFixtures(seasonId, matchday),
+    loadOpenligadbTeamIdByName(),
+    loadPlayerFormStats()
+  ]);
+
+  const fixtureByTeam = new Map();
+  for (const fx of matchdayFixtures) {
+    fixtureByTeam.set(String(fx.home_team_id), { ...fx, isHome: true });
+    fixtureByTeam.set(String(fx.away_team_id), { ...fx, isHome: false });
+  }
+
+  const excludeSet = new Set(excludePlayerIds.map(String));
+  const cap = Number.isFinite(maxBudget) && maxBudget > 0 ? maxBudget : Number.POSITIVE_INFINITY;
+
+  const eligible = allPlayers
+    .filter((p) => p.position === position)
+    .filter((p) => !excludeSet.has(String(p.playerId)))
+    .filter((p) => Number(p.marketValue ?? 0) <= cap)
+    .map((p) => {
+      const openligadbTeamId =
+        resolveOpenligadbTeamId({ kbTeamName: p.teamName, teamIdByName }) ?? String(p.teamId ?? "");
+      return {
+        ...p,
+        teamId: openligadbTeamId,
+        kickbaseTeamId: String(p.teamId ?? ""),
+        matchInfo: fixtureByTeam.get(openligadbTeamId) ?? null
+      };
+    })
+    .filter((p) => p.matchInfo);
+
+  // Project per match in parallel
+  const grouped = new Map();
+  for (const p of eligible) {
+    const matchId = String(p.matchInfo.match_id);
+    if (!grouped.has(matchId)) grouped.set(matchId, []);
+    grouped.get(matchId).push(p);
+  }
+
+  const engineResponses = await Promise.all(
+    Array.from(grouped.entries()).map(async ([matchId, players]) => {
+      const payload = players.map((p) => ({
+        playerId: String(p.playerId),
+        teamId: String(p.teamId),
+        position: p.position,
+        averagePoints: Number(p.averagePoints ?? 0),
+        startingProbability: adjustedStartingProb(p)
+      }));
+      const data = await fetchProjectionsForMatch({ matchId, players: payload, log });
+      return { matchId, data };
+    })
+  );
+
+  const projectionByPlayerId = new Map();
+  for (const r of engineResponses) {
+    if (!r.data) continue;
+    for (const proj of r.data.projections ?? []) {
+      projectionByPlayerId.set(String(proj.playerId), proj);
+    }
+  }
+
+  const profile = resolveRiskProfile(riskProfileKey);
+  const scored = eligible.map((p) => {
+    const proj = projectionByPlayerId.get(String(p.playerId));
+    const baseExpected = proj?.expectedPoints ?? 0;
+    const stats = formStats.get(String(p.playerId));
+    const adjustedExpected = applyProfileAdjustment(baseExpected, stats, profile);
+    return {
+      ...p,
+      expectedPoints: adjustedExpected,
+      baseExpectedPoints: baseExpected,
+      formStats: stats ?? null,
+      projectionBreakdown: proj?.breakdown ?? null
+    };
+  });
+
+  const alternatives = scored
+    .filter((p) => p.expectedPoints > 0)
+    .sort((a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0))
+    .slice(0, limit);
+
+  return {
+    seasonId,
+    matchday,
+    position,
+    maxBudget: Number.isFinite(maxBudget) ? maxBudget : null,
+    riskProfile: riskProfileKey,
+    alternatives
+  };
+}
+
 async function loadAllBundesligaPlayers() {
   const db = getFirestoreClient();
   const snap = await db.collection("players").get();
