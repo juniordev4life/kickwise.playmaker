@@ -37,3 +37,40 @@ export async function fetchPrediction({ matchId, log }) {
     return null;
   }
 }
+
+/**
+ * Fetch per-player Kickbase points projections for a specific match.
+ *
+ * @param {object} opts
+ * @param {string} opts.matchId
+ * @param {Array<object>} opts.players — must carry teamId, position,
+ *   averagePoints, startingProbability
+ * @param {import("fastify").FastifyBaseLogger} [opts.log]
+ * @returns {Promise<object|null>}
+ */
+export async function fetchProjectionsForMatch({ matchId, players, log }) {
+  const { baseUrl, timeoutMs } = getEngineConfig();
+  const url = new URL(`/api/v1/projections/match/${matchId}`, baseUrl).toString();
+  try {
+    const response = await request(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ players }),
+      bodyTimeout: timeoutMs,
+      headersTimeout: timeoutMs
+    });
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      log?.warn({ matchId, status: response.statusCode }, "Engine projections non-2xx");
+      return null;
+    }
+    const text = await response.body.text();
+    const parsed = text ? JSON.parse(text) : {};
+    return parsed?.data ?? null;
+  } catch (err) {
+    log?.warn({ matchId, err: err.message }, "Engine projections call failed");
+    return null;
+  }
+}
