@@ -28,8 +28,88 @@ const STATUS_PROB_CAPS = {
 
 function adjustedStartingProb(player) {
   const cap = STATUS_PROB_CAPS[player.status] ?? STATUS_PROB_CAPS.unknown;
-  const baseProb = Number(player.startingProbability ?? 0.65);
-  return Math.min(Math.max(0, baseProb), cap);
+  // Kickbase reports `prob` on a 0..4 scale (3 = likely start, 4 = certain).
+  // Normalise into a 0..1 probability before applying the status cap.
+  const raw = Number(player.startingProbability ?? 2.5);
+  const baseProb = raw > 1 ? Math.min(1, Math.max(0, raw / 4)) : Math.min(1, Math.max(0, raw));
+  return Math.min(baseProb, cap);
+}
+
+// Kickbase tags every player with its own internal team id which does NOT
+// match the openligadb team_id we use for fixtures/predictions. Bridge via
+// the team name as it appears on the Kickbase squad payload.
+const KICKBASE_NAME_TO_OPENLIGADB_NAME = {
+  Leverkusen: "Bayer 04 Leverkusen",
+  "Bayer Leverkusen": "Bayer 04 Leverkusen",
+  Bayern: "FC Bayern München",
+  "FC Bayern": "FC Bayern München",
+  "FC Bayern München": "FC Bayern München",
+  Dortmund: "Borussia Dortmund",
+  "Borussia Dortmund": "Borussia Dortmund",
+  "RB Leipzig": "RB Leipzig",
+  Leipzig: "RB Leipzig",
+  Stuttgart: "VfB Stuttgart",
+  "VfB Stuttgart": "VfB Stuttgart",
+  Frankfurt: "Eintracht Frankfurt",
+  "Eintracht Frankfurt": "Eintracht Frankfurt",
+  "M'gladbach": "Borussia Mönchengladbach",
+  Mönchengladbach: "Borussia Mönchengladbach",
+  "Borussia Mönchengladbach": "Borussia Mönchengladbach",
+  "Union Berlin": "1. FC Union Berlin",
+  "1. FC Union Berlin": "1. FC Union Berlin",
+  Hoffenheim: "TSG Hoffenheim",
+  "TSG Hoffenheim": "TSG Hoffenheim",
+  Wolfsburg: "VfL Wolfsburg",
+  "VfL Wolfsburg": "VfL Wolfsburg",
+  Freiburg: "SC Freiburg",
+  "SC Freiburg": "SC Freiburg",
+  Mainz: "1. FSV Mainz 05",
+  "1. FSV Mainz 05": "1. FSV Mainz 05",
+  Augsburg: "FC Augsburg",
+  "FC Augsburg": "FC Augsburg",
+  "St. Pauli": "FC St. Pauli",
+  "FC St. Pauli": "FC St. Pauli",
+  "Werder Bremen": "SV Werder Bremen",
+  "SV Werder Bremen": "SV Werder Bremen",
+  Bremen: "SV Werder Bremen",
+  Heidenheim: "1. FC Heidenheim 1846",
+  "1. FC Heidenheim": "1. FC Heidenheim 1846",
+  Köln: "1. FC Köln",
+  "1. FC Köln": "1. FC Köln",
+  "FC Köln": "1. FC Köln",
+  Hamburg: "Hamburger SV",
+  "Hamburger SV": "Hamburger SV",
+  HSV: "Hamburger SV"
+};
+
+/**
+ * Build a kickbaseTeamName → openligadb team_id lookup from the BQ teams
+ * table that we already populate in Scout. We need this at request time
+ * because Kickbase ids don't line up with openligadb ids (kickbase says
+ * Leverkusen has tid 7, but openligadb's 7 is Dortmund).
+ *
+ * @returns {Promise<Map<string, string>>}
+ */
+async function loadOpenligadbTeamIdByName() {
+  const bq = getBigQueryClient();
+  const [rows] = await bq.query({
+    query: `SELECT team_id, name FROM \`${bqTable("teams")}\``
+  });
+  const map = new Map();
+  for (const row of rows) {
+    if (row.name) map.set(row.name, String(row.team_id));
+  }
+  return map;
+}
+
+function resolveOpenligadbTeamId({ kbTeamName, teamIdByName }) {
+  if (!kbTeamName) return null;
+  // Direct match first (openligadb canonical name → id).
+  if (teamIdByName.has(kbTeamName)) return teamIdByName.get(kbTeamName);
+  // Translate via the Kickbase → openligadb name map.
+  const canonical = KICKBASE_NAME_TO_OPENLIGADB_NAME[kbTeamName];
+  if (canonical && teamIdByName.has(canonical)) return teamIdByName.get(canonical);
+  return null;
 }
 
 // Risk profiles shape three flavours of recommendation:
@@ -251,15 +331,18 @@ export async function buildOptimizedLineup({
     throw err;
   }
 
-  const squadResponse = await callWinger({
-    method: "GET",
-    path: `/api/v1/kickbase/squad/${encodeURIComponent(leagueId)}`,
-    kbToken,
-    log
-  });
+  const [squadResponse, matchdayFixtures, teamIdByName] = await Promise.all([
+    callWinger({
+      method: "GET",
+      path: `/api/v1/kickbase/squad/${encodeURIComponent(leagueId)}`,
+      kbToken,
+      log
+    }),
+    loadMatchdayFixtures(seasonId, matchday),
+    loadOpenligadbTeamIdByName()
+  ]);
   const squad = squadResponse?.players ?? [];
 
-  const matchdayFixtures = await loadMatchdayFixtures(seasonId, matchday);
   const fixtureByTeam = new Map();
   for (const fx of matchdayFixtures) {
     fixtureByTeam.set(String(fx.home_team_id), { ...fx, isHome: true });
@@ -269,13 +352,19 @@ export async function buildOptimizedLineup({
   const enriched = await Promise.all(
     squad.map(async (p) => {
       const fsData = await loadPlayerSnapshot(p.playerId);
-      const fixture = fixtureByTeam.get(String(p.teamId));
+      const kbTeamName = fsData?.teamName ?? p.teamName ?? null;
+      // Translate Kickbase teamId → openligadb teamId via the team name.
+      const openligadbTeamId =
+        resolveOpenligadbTeamId({ kbTeamName, teamIdByName }) ?? String(p.teamId ?? "");
+      const fixture = fixtureByTeam.get(openligadbTeamId);
       return {
         ...p,
+        teamId: openligadbTeamId,
+        kickbaseTeamId: String(p.teamId ?? ""),
         startingProbability: fsData?.startingProbability ?? null,
         imageUrl: fsData?.imageUrl ?? null,
         averagePoints: Number.isFinite(p.average) ? p.average : (fsData?.averagePoints ?? 0),
-        teamName: fsData?.teamName ?? null,
+        teamName: kbTeamName,
         // matchInfo is null when the player's team has no fixture this
         // matchday (Cup competitions, postponed games). The optimizer skips
         // such players so we don't recommend someone who won't play.
@@ -497,10 +586,11 @@ export async function buildBudgetLineup({
     throw err;
   }
 
-  // Load all Bundesliga players + fixtures for this matchday in parallel.
-  const [allPlayers, matchdayFixtures] = await Promise.all([
+  // Load all Bundesliga players + fixtures + team-id map in parallel.
+  const [allPlayers, matchdayFixtures, teamIdByName] = await Promise.all([
     loadAllBundesligaPlayers(),
-    loadMatchdayFixtures(seasonId, matchday)
+    loadMatchdayFixtures(seasonId, matchday),
+    loadOpenligadbTeamIdByName()
   ]);
 
   const fixtureByTeam = new Map();
@@ -509,9 +599,20 @@ export async function buildBudgetLineup({
     fixtureByTeam.set(String(fx.away_team_id), { ...fx, isHome: false });
   }
 
-  // Only players whose team has a fixture this matchday are eligible.
+  // Translate every player's Kickbase teamId to the openligadb teamId via
+  // teamName so the fixture join hits the right match. Players whose team
+  // has no Bundesliga fixture this matchday are filtered out.
   const eligible = allPlayers
-    .map((p) => ({ ...p, matchInfo: fixtureByTeam.get(String(p.teamId)) ?? null }))
+    .map((p) => {
+      const openligadbTeamId =
+        resolveOpenligadbTeamId({ kbTeamName: p.teamName, teamIdByName }) ?? String(p.teamId ?? "");
+      return {
+        ...p,
+        teamId: openligadbTeamId,
+        kickbaseTeamId: String(p.teamId ?? ""),
+        matchInfo: fixtureByTeam.get(openligadbTeamId) ?? null
+      };
+    })
     .filter((p) => p.matchInfo);
 
   // Group by matchId so we can batch the Engine projections one call per match.
