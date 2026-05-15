@@ -15,6 +15,23 @@ export const FORMATIONS = {
   "5-4-1": { DEF: 5, MID: 4, FWD: 1 }
 };
 
+// Status → startingProbability cap. Used to keep the optimizer from picking
+// players who are injured or out, and to dampen the projection for
+// questionable players.
+const STATUS_PROB_CAPS = {
+  fit: 1.0,
+  questionable: 0.4,
+  injured: 0,
+  out: 0,
+  unknown: 1.0
+};
+
+function adjustedStartingProb(player) {
+  const cap = STATUS_PROB_CAPS[player.status] ?? STATUS_PROB_CAPS.unknown;
+  const baseProb = Number(player.startingProbability ?? 0.65);
+  return Math.min(Math.max(0, baseProb), cap);
+}
+
 /**
  * Compose the best-projected starting XI for a user's Kickbase squad for a
  * given matchday and formation. Pulls the squad via Winger, enriches each
@@ -44,10 +61,10 @@ export async function buildOptimizedLineup({
   formationKey,
   log
 }) {
-  const formation = FORMATIONS[formationKey];
-  if (!formation) {
+  const isAuto = formationKey === "auto";
+  if (!isAuto && !FORMATIONS[formationKey]) {
     const err = new Error(
-      `Unknown formation '${formationKey}'. Valid: ${Object.keys(FORMATIONS).join(", ")}`
+      `Unknown formation '${formationKey}'. Valid: ${Object.keys(FORMATIONS).join(", ") + ", auto"}`
     );
     err.statusCode = 400;
     throw err;
@@ -109,7 +126,11 @@ export async function buildOptimizedLineup({
         teamId: String(p.teamId),
         position: p.position,
         averagePoints: Number(p.averagePoints ?? 0),
-        startingProbability: p.startingProbability ?? null
+        // Status-adjusted startingProbability: injured / out players are
+        // floored to 0 here (so they're never recommended), questionable
+        // players are capped at 0.4. The Engine never sees their fitness
+        // flag — it sees a low probability number.
+        startingProbability: adjustedStartingProb(p)
       }));
       const data = await fetchProjectionsForMatch({ matchId, players: payload, log });
       return { matchId, data };
@@ -135,12 +156,24 @@ export async function buildOptimizedLineup({
     };
   });
 
-  // Pick best XI for the formation
-  const startingXI = pickBestXI(scored, formation);
+  // Pick best XI. In "auto" mode we evaluate every formation and pick the
+  // one with the highest total — small enough (7 formations × O(n log n)
+  // sort) that we just brute force.
+  const candidateFormations = isAuto ? Object.keys(FORMATIONS) : [formationKey];
+  let best = null;
+  for (const key of candidateFormations) {
+    const lineupCandidate = pickBestXI(scored, FORMATIONS[key]);
+    const total = lineupCandidate.reduce((s, p) => s + (p.expectedPoints ?? 0), 0);
+    if (!best || total > best.total) {
+      best = { key, lineupCandidate, total };
+    }
+  }
+  const startingXI = best.lineupCandidate;
+  const chosenFormation = best.key;
 
   // Captain = highest expected within the starting XI
   const captain = startingXI.reduce(
-    (best, p) => (p.expectedPoints > (best?.expectedPoints ?? -1) ? p : best),
+    (b, p) => (p.expectedPoints > (b?.expectedPoints ?? -1) ? p : b),
     null
   );
 
@@ -148,16 +181,28 @@ export async function buildOptimizedLineup({
     startingXI.reduce((s, p) => s + (p.expectedPoints ?? 0), 0) +
     (captain ? captain.expectedPoints : 0); // captain doubles
 
+  // Flag risky picks so the UI can warn the user — these are players we
+  // recommended despite questionable / unknown fitness.
+  const warnings = startingXI
+    .filter((p) => p.status && p.status !== "fit" && p.status !== "unknown")
+    .map((p) => ({
+      playerId: p.playerId,
+      name: p.name,
+      status: p.status
+    }));
+
   return {
     seasonId,
     matchday,
-    formation: formationKey,
+    formation: chosenFormation,
+    requestedFormation: formationKey,
     lineup: startingXI,
     bench: scored
       .filter((p) => !startingXI.find((s) => s.playerId === p.playerId))
       .sort((a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0)),
     captain: captain ? { playerId: captain.playerId, name: captain.name } : null,
-    totalExpectedPoints: totalExpected
+    totalExpectedPoints: totalExpected,
+    warnings
   };
 }
 

@@ -1,4 +1,5 @@
 import {
+  getCaptainCandidatesController,
   getOptimizedLineupController,
   getSquadController
 } from "../../../controllers/squad.controllers.js";
@@ -15,5 +16,11 @@ export default async function squadRoutes(fastify) {
     schema: getOptimizedLineupController.schema,
     preHandler: [requireUser],
     handler: getOptimizedLineupController.handler
+  });
+
+  fastify.get("/:leagueId/captain-candidates", {
+    schema: getCaptainCandidatesController.schema,
+    preHandler: [requireUser],
+    handler: getCaptainCandidatesController.handler
   });
 }
