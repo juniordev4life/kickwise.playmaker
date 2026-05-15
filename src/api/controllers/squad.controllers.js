@@ -262,7 +262,7 @@ export const submitLineupController = {
         );
       }
 
-      await callWinger({
+      const kickbaseResponse = await callWinger({
         method: "POST",
         path: `/api/v1/kickbase/leagues/${encodeURIComponent(leagueId)}/lineup`,
         kbToken: request.user.kbToken,
@@ -276,7 +276,9 @@ export const submitLineupController = {
       return setGeneralResponse(reply, 200, "Success", "Lineup submitted to Kickbase", {
         leagueId,
         formation,
-        playerCount: ordered.length
+        playerCount: ordered.length,
+        sentPlayerIds: ordered.map((p) => String(p.playerId)),
+        kickbaseResponse
       });
     } catch (error) {
       return handleErrorResponse(reply, error, request);
