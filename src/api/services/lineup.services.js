@@ -1,5 +1,6 @@
 import { bqTable, getBigQueryClient } from "../../config/bigQuery.config.js";
 import { getFirestoreClient } from "../../config/firestore.config.js";
+import { loadPlayerFormStats } from "./bigquery.services.js";
 import { fetchProjectionsForMatch } from "./engine.services.js";
 import { callWinger } from "./winger.services.js";
 
@@ -113,30 +114,73 @@ function resolveOpenligadbTeamId({ kbTeamName, teamIdByName }) {
 }
 
 // Risk profiles shape three flavours of recommendation:
-//   conservative — only proven starters from clear favorites
-//   balanced     — the default, no extra filters
-//   bold         — include rotation candidates + bias the captain to a
-//                  high-ceiling pick (FWD on the team with the highest xG)
+//   conservative — only proven starters from clear favorites, dampen
+//                  expectations for high-volatility players
+//   balanced     — the default, no extra filters or adjustments
+//   bold         — include rotation candidates, boost expectations for
+//                  players with high recent peaks (upside)
+//
+// `volatilityPenalty` scales the cov (coefficient of variation): higher
+// values pull volatile players down. `ceilingBoost` scales (recentMax/avg
+// − 1): higher values reward players with recent big games.
 export const RISK_PROFILES = {
   conservative: {
     label: "Konservativ",
     minStartingProb: 0.6,
     minTeamWinProb: 0.3,
-    captainStrategy: "safest"
+    captainStrategy: "safest",
+    volatilityPenalty: 0.3,
+    ceilingBoost: 0
   },
   balanced: {
     label: "Normal",
     minStartingProb: 0.0,
     minTeamWinProb: 0.0,
-    captainStrategy: "highest"
+    captainStrategy: "highest",
+    volatilityPenalty: 0,
+    ceilingBoost: 0
   },
   bold: {
     label: "Mutig",
     minStartingProb: 0.3,
     minTeamWinProb: 0.0,
-    captainStrategy: "ceiling"
+    captainStrategy: "ceiling",
+    volatilityPenalty: 0,
+    ceilingBoost: 0.5
   }
 };
+
+/**
+ * Apply risk-profile-specific multipliers to a player's projected points
+ * based on their historical form stats. Volatility (coefficient of
+ * variation) pulls volatile players down for the conservative profile;
+ * ceiling (recent max ÷ average) lifts high-upside players for bold.
+ *
+ * @param {number} baseExpected from the engine projection
+ * @param {{cov: number, ceiling: number, playedCount: number}|undefined} formStats
+ * @param {object} profile
+ * @returns {number}
+ */
+function applyProfileAdjustment(baseExpected, formStats, profile) {
+  if (!baseExpected || baseExpected <= 0) return baseExpected;
+  // Need enough samples for the stats to be meaningful.
+  if (!formStats || formStats.playedCount < 5) return baseExpected;
+
+  let adjustment = 1;
+  if (profile.volatilityPenalty > 0) {
+    // cov of 0 = perfectly consistent → no penalty.
+    // cov of 1 = std equals mean → up to ~30% penalty at volatilityPenalty=0.3.
+    adjustment *= 1 - profile.volatilityPenalty * Math.min(1, formStats.cov);
+  }
+  if (profile.ceilingBoost > 0) {
+    // ceiling of 1 = recent peak equals avg → no boost.
+    // ceiling of 2 = recent peak is double avg → up to +50% at ceilingBoost=0.5.
+    // Cap ceiling at 3 so a single outlier game doesn't blow the boost up.
+    const cappedCeiling = Math.min(3, Math.max(1, formStats.ceiling));
+    adjustment *= 1 + profile.ceilingBoost * (cappedCeiling - 1);
+  }
+  return baseExpected * adjustment;
+}
 
 function resolveRiskProfile(key) {
   return RISK_PROFILES[key] ?? RISK_PROFILES.balanced;
@@ -331,7 +375,7 @@ export async function buildOptimizedLineup({
     throw err;
   }
 
-  const [squadResponse, matchdayFixtures, teamIdByName] = await Promise.all([
+  const [squadResponse, matchdayFixtures, teamIdByName, formStats] = await Promise.all([
     callWinger({
       method: "GET",
       path: `/api/v1/kickbase/squad/${encodeURIComponent(leagueId)}`,
@@ -339,7 +383,8 @@ export async function buildOptimizedLineup({
       log
     }),
     loadMatchdayFixtures(seasonId, matchday),
-    loadOpenligadbTeamIdByName()
+    loadOpenligadbTeamIdByName(),
+    loadPlayerFormStats()
   ]);
   const squad = squadResponse?.players ?? [];
 
@@ -416,14 +461,22 @@ export async function buildOptimizedLineup({
     }
   }
 
+  const riskProfile = resolveRiskProfile(riskProfileKey);
+
   // Merge projection back into the enriched squad, then carry through the
   // match's outcome probabilities on every player so risk-profile filters
-  // can reason about them downstream.
+  // can reason about them downstream. Apply the profile's
+  // volatility / ceiling adjustment to the engine's base expectedPoints.
   const scored = enriched.map((p) => {
     const proj = projectionByPlayerId.get(String(p.playerId));
+    const baseExpected = proj?.expectedPoints ?? 0;
+    const stats = formStats.get(String(p.playerId));
+    const adjustedExpected = applyProfileAdjustment(baseExpected, stats, riskProfile);
     return {
       ...p,
-      expectedPoints: proj?.expectedPoints ?? 0,
+      expectedPoints: adjustedExpected,
+      baseExpectedPoints: baseExpected,
+      formStats: stats ?? null,
       projectionBreakdown: proj?.breakdown ?? null,
       matchInfo: p.matchInfo
         ? {
@@ -439,7 +492,6 @@ export async function buildOptimizedLineup({
     };
   });
 
-  const riskProfile = resolveRiskProfile(riskProfileKey);
   const filtered = applyRiskFilter(scored, riskProfile);
 
   // Pick best XI. In "auto" mode we evaluate every formation and pick the
@@ -586,11 +638,12 @@ export async function buildBudgetLineup({
     throw err;
   }
 
-  // Load all Bundesliga players + fixtures + team-id map in parallel.
-  const [allPlayers, matchdayFixtures, teamIdByName] = await Promise.all([
+  // Load all Bundesliga players + fixtures + team-id map + form stats in parallel.
+  const [allPlayers, matchdayFixtures, teamIdByName, formStats] = await Promise.all([
     loadAllBundesligaPlayers(),
     loadMatchdayFixtures(seasonId, matchday),
-    loadOpenligadbTeamIdByName()
+    loadOpenligadbTeamIdByName(),
+    loadPlayerFormStats()
   ]);
 
   const fixtureByTeam = new Map();
@@ -645,11 +698,18 @@ export async function buildBudgetLineup({
     }
   }
 
+  const riskProfile = resolveRiskProfile(riskProfileKey);
+
   const scored = eligible.map((p) => {
     const proj = projectionByPlayerId.get(String(p.playerId));
+    const baseExpected = proj?.expectedPoints ?? 0;
+    const stats = formStats.get(String(p.playerId));
+    const adjustedExpected = applyProfileAdjustment(baseExpected, stats, riskProfile);
     return {
       ...p,
-      expectedPoints: proj?.expectedPoints ?? 0,
+      expectedPoints: adjustedExpected,
+      baseExpectedPoints: baseExpected,
+      formStats: stats ?? null,
       projectionBreakdown: proj?.breakdown ?? null,
       matchInfo: p.matchInfo
         ? {
@@ -665,7 +725,6 @@ export async function buildBudgetLineup({
     };
   });
 
-  const riskProfile = resolveRiskProfile(riskProfileKey);
   const filteredPool = applyRiskFilter(scored, riskProfile);
   const poolForSearch = filteredPool.length >= 25 ? filteredPool : scored;
 

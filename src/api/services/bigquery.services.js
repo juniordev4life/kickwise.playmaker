@@ -160,3 +160,68 @@ export async function getCurrentMatchday(seasonId) {
   }
   return rows[0].matchday;
 }
+
+/**
+ * Per-player form statistics over the last ~50 played matchdays:
+ *   - playedCount: matches played (sample size)
+ *   - avg:         mean Kickbase points
+ *   - std:         population stddev of points
+ *   - recentMax:   highest score in the most recent 5 played matchdays
+ *   - cov:         coefficient of variation (std / avg) — volatility
+ *   - ceiling:     recentMax / avg — recent upside relative to baseline
+ *
+ * Used by the risk-profile adjustments: bold boosts ceiling players, while
+ * conservative penalises high-cov (volatile) players.
+ *
+ * @returns {Promise<Map<string, object>>} keyed by player_id
+ *
+ * @example
+ *   const stats = await loadPlayerFormStats();
+ *   stats.get("12345").ceiling // ≈ 1.5 if their recent peak is 50% above avg
+ */
+export async function loadPlayerFormStats() {
+  const bq = getBigQueryClient();
+  const [rows] = await bq.query({
+    query: `
+      WITH base AS (
+        SELECT player_id, season_id, matchday, points
+        FROM \`${bqTable("kickbase_player_points")}\`
+        WHERE has_played = TRUE
+          AND source = 'kickbase-performance'
+          AND points IS NOT NULL
+          AND season_id IN (
+            SELECT season_id FROM \`${bqTable("seasons")}\`
+            ORDER BY season_id DESC LIMIT 2
+          )
+      ),
+      ranked AS (
+        SELECT player_id, points, matchday, season_id,
+               ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY season_id DESC, matchday DESC) AS rn
+        FROM base
+      )
+      SELECT
+        b.player_id,
+        COUNT(*) AS played,
+        AVG(b.points) AS avg_pts,
+        STDDEV_POP(b.points) AS std_pts,
+        (SELECT MAX(r.points) FROM ranked r WHERE r.player_id = b.player_id AND r.rn <= 5) AS recent_max
+      FROM base b
+      GROUP BY b.player_id
+    `
+  });
+  const map = new Map();
+  for (const r of rows) {
+    const avg = Number(r.avg_pts ?? 0);
+    const std = Number(r.std_pts ?? 0);
+    const recentMax = Number(r.recent_max ?? 0);
+    map.set(String(r.player_id), {
+      playedCount: Number(r.played ?? 0),
+      avg,
+      std,
+      recentMax,
+      cov: avg > 0 ? std / avg : 0,
+      ceiling: avg > 0 ? recentMax / avg : 1
+    });
+  }
+  return map;
+}
