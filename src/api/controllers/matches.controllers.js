@@ -1,5 +1,6 @@
 import { bqTable, getBigQueryClient } from "../../config/bigQuery.config.js";
 import { handleErrorResponse, setGeneralResponse } from "../helpers/responseHandler.helpers.js";
+import { fetchPrediction } from "../services/engine.services.js";
 import { fetchMatchDetail } from "../services/openligadb.services.js";
 
 const matchParamsSchema = {
@@ -31,6 +32,9 @@ export const getMatchByIdController = {
         match.homeStats = null;
         match.awayStats = null;
       }
+
+      // Best-effort prediction — Engine may be unreachable, model may lack data
+      match.prediction = await fetchPrediction({ matchId, log: request.log });
 
       return setGeneralResponse(reply, 200, "Success", "Match retrieved", { match });
     } catch (error) {
