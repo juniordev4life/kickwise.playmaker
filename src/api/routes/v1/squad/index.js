@@ -1,7 +1,8 @@
 import {
   getCaptainCandidatesController,
   getOptimizedLineupController,
-  getSquadController
+  getSquadController,
+  submitLineupController
 } from "../../../controllers/squad.controllers.js";
 import { requireUser } from "../../../middlewares/requireUser.middlewares.js";
 
@@ -16,6 +17,12 @@ export default async function squadRoutes(fastify) {
     schema: getOptimizedLineupController.schema,
     preHandler: [requireUser],
     handler: getOptimizedLineupController.handler
+  });
+
+  fastify.post("/:leagueId/lineup", {
+    schema: submitLineupController.schema,
+    preHandler: [requireUser],
+    handler: submitLineupController.handler
   });
 
   fastify.get("/:leagueId/captain-candidates", {

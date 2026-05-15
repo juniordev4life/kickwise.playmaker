@@ -198,6 +198,111 @@ export const getAlternativesController = {
   }
 };
 
+const POSITION_ORDER = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+
+const submitLineupBodySchema = {
+  type: "object",
+  required: ["formation", "players"],
+  properties: {
+    formation: { type: "string", enum: Object.keys(FORMATIONS) },
+    players: {
+      type: "array",
+      minItems: 11,
+      maxItems: 11,
+      items: {
+        type: "object",
+        required: ["playerId", "position"],
+        properties: {
+          playerId: { type: ["string", "number"] },
+          position: { type: "string", enum: ["GK", "DEF", "MID", "FWD"] }
+        }
+      }
+    }
+  }
+};
+
+/**
+ * POST /api/v1/squad/:leagueId/lineup — push the chosen XI to Kickbase.
+ *
+ * Validates that every player in the body is actually in the user's
+ * Kickbase squad (so we don't submit hypothetical Bundesliga + Budget
+ * players that the user doesn't own). Sorts by position into the
+ * canonical slot order Kickbase expects, then forwards to Winger.
+ */
+export const submitLineupController = {
+  schema: { params: leagueParamsSchema, body: submitLineupBodySchema },
+  handler: async (request, reply) => {
+    try {
+      const { leagueId } = request.params;
+      const { formation, players: submitted } = request.body;
+
+      // Verify every submitted player is in the user's Kickbase squad.
+      const squadResponse = await callWinger({
+        method: "GET",
+        path: `/api/v1/kickbase/squad/${encodeURIComponent(leagueId)}`,
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      const ownedIds = new Set((squadResponse?.players ?? []).map((p) => String(p.playerId)));
+      const missing = submitted.map((p) => String(p.playerId)).filter((id) => !ownedIds.has(id));
+      if (missing.length > 0) {
+        return setGeneralResponse(
+          reply,
+          400,
+          "Bad Request",
+          "Some players are not in your Kickbase squad and can't be fielded.",
+          { missingPlayerIds: missing }
+        );
+      }
+
+      // Sort by canonical slot order: GK first, then DEF, MID, FWD.
+      const ordered = [...submitted].sort(
+        (a, b) => (POSITION_ORDER[a.position] ?? 9) - (POSITION_ORDER[b.position] ?? 9)
+      );
+
+      // Validate formation matches the position counts.
+      const counts = ordered.reduce(
+        (acc, p) => ({ ...acc, [p.position]: (acc[p.position] ?? 0) + 1 }),
+        {}
+      );
+      const expected = FORMATIONS[formation];
+      if (
+        counts.GK !== 1 ||
+        counts.DEF !== expected.DEF ||
+        counts.MID !== expected.MID ||
+        counts.FWD !== expected.FWD
+      ) {
+        return setGeneralResponse(
+          reply,
+          400,
+          "Bad Request",
+          `Player positions don't match formation ${formation}.`,
+          { gotCounts: counts, expected: { GK: 1, ...expected } }
+        );
+      }
+
+      await callWinger({
+        method: "POST",
+        path: `/api/v1/kickbase/leagues/${encodeURIComponent(leagueId)}/lineup`,
+        kbToken: request.user.kbToken,
+        body: {
+          type: formation,
+          players: ordered.map((p) => String(p.playerId))
+        },
+        log: request.log
+      });
+
+      return setGeneralResponse(reply, 200, "Success", "Lineup submitted to Kickbase", {
+        leagueId,
+        formation,
+        playerCount: ordered.length
+      });
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
 /**
  * Captain-only quick lookup: returns the top-3 candidates from the user's
  * squad, ranked by expected points. Designed for the matchday overview so
