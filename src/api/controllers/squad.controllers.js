@@ -1,7 +1,11 @@
 import { handleErrorResponse, setGeneralResponse } from "../helpers/responseHandler.helpers.js";
 import { leagueParamsSchema } from "../schemas/league.schemas.js";
 import { getCurrentMatchday, getCurrentSeason } from "../services/bigquery.services.js";
-import { buildOptimizedLineup, FORMATIONS } from "../services/lineup.services.js";
+import {
+  buildBudgetLineup,
+  buildOptimizedLineup,
+  FORMATIONS
+} from "../services/lineup.services.js";
 import { callWinger } from "../services/winger.services.js";
 
 export const getSquadController = {
@@ -66,6 +70,61 @@ export const getOptimizedLineupController = {
       });
 
       return setGeneralResponse(reply, 200, "Success", "Optimized lineup", result);
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
+const budgetLineupQuerySchema = {
+  type: "object",
+  required: ["budget"],
+  properties: {
+    budget: { type: "integer", minimum: 1_000_000, maximum: 1_000_000_000 },
+    matchday: { type: "integer", minimum: 1, maximum: 34 },
+    seasonId: { type: "string", pattern: "^\\d{4}/\\d{4}$" },
+    formation: { type: "string", enum: [...Object.keys(FORMATIONS), "auto"] }
+  }
+};
+
+/**
+ * GET /api/v1/lineup/budget — budget-constrained best XI from all Bundesliga
+ * players. No login required.
+ */
+export const getBudgetLineupController = {
+  schema: { querystring: budgetLineupQuerySchema },
+  handler: async (request, reply) => {
+    try {
+      let seasonId = request.query.seasonId;
+      let matchday = request.query.matchday;
+      const formation = request.query.formation ?? "auto";
+      const budget = Number(request.query.budget);
+
+      if (!seasonId) {
+        const current = await getCurrentSeason();
+        seasonId = current?.season_id;
+      }
+      if (!matchday && seasonId) {
+        matchday = await getCurrentMatchday(seasonId);
+      }
+      if (!seasonId || !matchday) {
+        return setGeneralResponse(
+          reply,
+          404,
+          "Not Found",
+          "No current season / matchday available.",
+          {}
+        );
+      }
+
+      const result = await buildBudgetLineup({
+        seasonId,
+        matchday,
+        formationKey: formation,
+        budget,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Budget lineup", result);
     } catch (error) {
       return handleErrorResponse(reply, error, request);
     }
