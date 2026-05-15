@@ -86,6 +86,32 @@ export const getPlayerByIdController = {
 };
 
 /**
+ * Returns the 18 currently active Bundesliga teams (id, name, logo). Used by
+ * the Striker as a lookup table for opponent filters and per-matchday cards.
+ */
+export const listTeamsController = {
+  handler: async (request, reply) => {
+    try {
+      const data = await callWinger({
+        method: "GET",
+        path: "/api/v1/kickbase/competitions/1/table",
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      const teams = (data.teams ?? []).map((t) => ({
+        teamId: t.teamId,
+        name: t.name,
+        logoUrl: t.logoUrl,
+        rank: t.rank ?? null
+      }));
+      return setGeneralResponse(reply, 200, "Success", "Teams retrieved", { teams });
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
+/**
  * Multi-season matchday-by-matchday performance for a single player. Lives as
  * its own endpoint (separate from /:playerId) because it's a Kickbase live
  * call and we want the player detail page to be able to load it lazily.
