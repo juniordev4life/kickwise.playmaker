@@ -14,15 +14,29 @@ import { bqTable, getBigQueryClient } from "../../config/bigQuery.config.js";
 export async function getMatchesByMatchday({ seasonId, matchday }) {
   const bq = getBigQueryClient();
   const sql = `
+    WITH latest_predictions AS (
+      SELECT match_id, model_version, prob_home_win, prob_draw, prob_away_win,
+             expected_home_goals, expected_away_goals, run_at,
+             ROW_NUMBER() OVER (PARTITION BY match_id ORDER BY run_at DESC) AS rn
+      FROM \`${bqTable("predictions")}\`
+    )
     SELECT
       m.match_id, m.season_id, m.matchday,
       m.home_team_id, m.away_team_id,
       m.kickoff_at, m.home_score, m.away_score, m.status,
       th.name AS home_team_name, th.short_name AS home_team_short, th.logo_url AS home_logo_url,
-      ta.name AS away_team_name, ta.short_name AS away_team_short, ta.logo_url AS away_logo_url
+      ta.name AS away_team_name, ta.short_name AS away_team_short, ta.logo_url AS away_logo_url,
+      p.model_version AS prediction_model_version,
+      p.prob_home_win AS prediction_prob_home_win,
+      p.prob_draw AS prediction_prob_draw,
+      p.prob_away_win AS prediction_prob_away_win,
+      p.expected_home_goals AS prediction_expected_home_goals,
+      p.expected_away_goals AS prediction_expected_away_goals,
+      p.run_at AS prediction_run_at
     FROM \`${bqTable("matches")}\` m
     LEFT JOIN \`${bqTable("teams")}\` th ON m.home_team_id = th.team_id
     LEFT JOIN \`${bqTable("teams")}\` ta ON m.away_team_id = ta.team_id
+    LEFT JOIN latest_predictions p ON p.match_id = m.match_id AND p.rn = 1
     WHERE m.season_id = @seasonId AND m.matchday = @matchday
     ORDER BY m.kickoff_at ASC
   `;
@@ -30,7 +44,40 @@ export async function getMatchesByMatchday({ seasonId, matchday }) {
     query: sql,
     params: { seasonId, matchday }
   });
-  return rows;
+  return rows.map(reshapeMatchRow);
+}
+
+function reshapeMatchRow(row) {
+  const hasPrediction =
+    row.prediction_prob_home_win !== null && row.prediction_prob_home_win !== undefined;
+  return {
+    match_id: row.match_id,
+    season_id: row.season_id,
+    matchday: row.matchday,
+    home_team_id: row.home_team_id,
+    away_team_id: row.away_team_id,
+    kickoff_at: row.kickoff_at,
+    home_score: row.home_score,
+    away_score: row.away_score,
+    status: row.status,
+    home_team_name: row.home_team_name,
+    home_team_short: row.home_team_short,
+    home_logo_url: row.home_logo_url,
+    away_team_name: row.away_team_name,
+    away_team_short: row.away_team_short,
+    away_logo_url: row.away_logo_url,
+    prediction: hasPrediction
+      ? {
+          modelVersion: row.prediction_model_version,
+          probHomeWin: row.prediction_prob_home_win,
+          probDraw: row.prediction_prob_draw,
+          probAwayWin: row.prediction_prob_away_win,
+          expectedHomeGoals: row.prediction_expected_home_goals,
+          expectedAwayGoals: row.prediction_expected_away_goals,
+          runAt: row.prediction_run_at
+        }
+      : null
+  };
 }
 
 /**
