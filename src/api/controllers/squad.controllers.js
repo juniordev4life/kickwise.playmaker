@@ -4,7 +4,8 @@ import { getCurrentMatchday, getCurrentSeason } from "../services/bigquery.servi
 import {
   buildBudgetLineup,
   buildOptimizedLineup,
-  FORMATIONS
+  FORMATIONS,
+  RISK_PROFILES
 } from "../services/lineup.services.js";
 import { callWinger } from "../services/winger.services.js";
 
@@ -30,7 +31,8 @@ const lineupQuerySchema = {
   properties: {
     matchday: { type: "integer", minimum: 1, maximum: 34 },
     seasonId: { type: "string", pattern: "^\\d{4}/\\d{4}$" },
-    formation: { type: "string", enum: [...Object.keys(FORMATIONS), "auto"] }
+    formation: { type: "string", enum: [...Object.keys(FORMATIONS), "auto"] },
+    riskProfile: { type: "string", enum: Object.keys(RISK_PROFILES) }
   }
 };
 
@@ -66,6 +68,7 @@ export const getOptimizedLineupController = {
         seasonId,
         matchday,
         formationKey: formation,
+        riskProfileKey: request.query.riskProfile ?? "balanced",
         log: request.log
       });
 
@@ -83,7 +86,8 @@ const budgetLineupQuerySchema = {
     budget: { type: "integer", minimum: 1_000_000, maximum: 1_000_000_000 },
     matchday: { type: "integer", minimum: 1, maximum: 34 },
     seasonId: { type: "string", pattern: "^\\d{4}/\\d{4}$" },
-    formation: { type: "string", enum: [...Object.keys(FORMATIONS), "auto"] }
+    formation: { type: "string", enum: [...Object.keys(FORMATIONS), "auto"] },
+    riskProfile: { type: "string", enum: Object.keys(RISK_PROFILES) }
   }
 };
 
@@ -122,6 +126,7 @@ export const getBudgetLineupController = {
         matchday,
         formationKey: formation,
         budget,
+        riskProfileKey: request.query.riskProfile ?? "balanced",
         log: request.log
       });
       return setGeneralResponse(reply, 200, "Success", "Budget lineup", result);

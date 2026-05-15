@@ -32,6 +32,72 @@ function adjustedStartingProb(player) {
   return Math.min(Math.max(0, baseProb), cap);
 }
 
+// Risk profiles shape three flavours of recommendation:
+//   conservative — only proven starters from clear favorites
+//   balanced     — the default, no extra filters
+//   bold         — include rotation candidates + bias the captain to a
+//                  high-ceiling pick (FWD on the team with the highest xG)
+export const RISK_PROFILES = {
+  conservative: {
+    label: "Konservativ",
+    minStartingProb: 0.6,
+    minTeamWinProb: 0.3,
+    captainStrategy: "safest"
+  },
+  balanced: {
+    label: "Normal",
+    minStartingProb: 0.0,
+    minTeamWinProb: 0.0,
+    captainStrategy: "highest"
+  },
+  bold: {
+    label: "Mutig",
+    minStartingProb: 0.3,
+    minTeamWinProb: 0.0,
+    captainStrategy: "ceiling"
+  }
+};
+
+function resolveRiskProfile(key) {
+  return RISK_PROFILES[key] ?? RISK_PROFILES.balanced;
+}
+
+function applyRiskFilter(players, profile) {
+  return players.filter((p) => {
+    if (adjustedStartingProb(p) < profile.minStartingProb) return false;
+    if (!p.matchInfo) return true; // no fixture, will be skipped later anyway
+    const winProb = p.matchInfo.isHome
+      ? Number(p.matchInfo.probHomeWin ?? 0)
+      : Number(p.matchInfo.probAwayWin ?? 0);
+    if (winProb && winProb < profile.minTeamWinProb) return false;
+    return true;
+  });
+}
+
+function pickCaptain(startingXI, profile) {
+  if (!startingXI.length) return null;
+  if (profile.captainStrategy === "safest") {
+    // safest = highest expectedPoints among players with startingProb >= 0.8;
+    // falls back to plain highest if none qualify.
+    const safe = startingXI.filter((p) => (p.startingProbability ?? 0) >= 0.8);
+    const pool = safe.length ? safe : startingXI;
+    return pool.reduce((b, p) => ((p.expectedPoints ?? 0) > (b?.expectedPoints ?? -1) ? p : b));
+  }
+  if (profile.captainStrategy === "ceiling") {
+    // ceiling = FWD or MID on a team with high expectedGoals (top quartile).
+    // We don't have a quartile boundary here, so use a hard threshold of 1.8.
+    const upsidePicks = startingXI.filter((p) => {
+      const isAttacker = p.position === "FWD" || p.position === "MID";
+      const teamXg = Number(p.projectionBreakdown?.teamExpectedGoals ?? 0);
+      return isAttacker && teamXg >= 1.8;
+    });
+    const pool = upsidePicks.length ? upsidePicks : startingXI;
+    return pool.reduce((b, p) => ((p.expectedPoints ?? 0) > (b?.expectedPoints ?? -1) ? p : b));
+  }
+  // default "highest"
+  return startingXI.reduce((b, p) => ((p.expectedPoints ?? 0) > (b?.expectedPoints ?? -1) ? p : b));
+}
+
 /**
  * Budget-constrained best XI. Picks from a pool of (already-projected)
  * players such that:
@@ -173,6 +239,7 @@ export async function buildOptimizedLineup({
   seasonId,
   matchday,
   formationKey,
+  riskProfileKey = "balanced",
   log
 }) {
   const isAuto = formationKey === "auto";
@@ -260,15 +327,31 @@ export async function buildOptimizedLineup({
     }
   }
 
-  // Merge projection back into the enriched squad
+  // Merge projection back into the enriched squad, then carry through the
+  // match's outcome probabilities on every player so risk-profile filters
+  // can reason about them downstream.
   const scored = enriched.map((p) => {
     const proj = projectionByPlayerId.get(String(p.playerId));
     return {
       ...p,
       expectedPoints: proj?.expectedPoints ?? 0,
-      projectionBreakdown: proj?.breakdown ?? null
+      projectionBreakdown: proj?.breakdown ?? null,
+      matchInfo: p.matchInfo
+        ? {
+            ...p.matchInfo,
+            probHomeWin: proj?.breakdown?.isHome
+              ? proj?.breakdown?.teamWinProbability
+              : 1 - (proj?.breakdown?.teamWinProbability ?? 0),
+            probAwayWin: proj?.breakdown?.isHome
+              ? 1 - (proj?.breakdown?.teamWinProbability ?? 0)
+              : proj?.breakdown?.teamWinProbability
+          }
+        : null
     };
   });
+
+  const riskProfile = resolveRiskProfile(riskProfileKey);
+  const filtered = applyRiskFilter(scored, riskProfile);
 
   // Pick best XI. In "auto" mode we evaluate every formation and pick the
   // one with the highest total — small enough (7 formations × O(n log n)
@@ -276,20 +359,29 @@ export async function buildOptimizedLineup({
   const candidateFormations = isAuto ? Object.keys(FORMATIONS) : [formationKey];
   let best = null;
   for (const key of candidateFormations) {
-    const lineupCandidate = pickBestXI(scored, FORMATIONS[key]);
+    const lineupCandidate = pickBestXI(filtered, FORMATIONS[key]);
     const total = lineupCandidate.reduce((s, p) => s + (p.expectedPoints ?? 0), 0);
     if (!best || total > best.total) {
       best = { key, lineupCandidate, total };
     }
   }
+  // If the risk filter wiped out enough players that we can't fill the XI,
+  // fall back to the unfiltered pool — better a recommendation with one
+  // questionable pick than nothing.
+  if (!best || best.lineupCandidate.length < 11) {
+    best = null;
+    for (const key of candidateFormations) {
+      const lineupCandidate = pickBestXI(scored, FORMATIONS[key]);
+      const total = lineupCandidate.reduce((s, p) => s + (p.expectedPoints ?? 0), 0);
+      if (!best || total > best.total) {
+        best = { key, lineupCandidate, total };
+      }
+    }
+  }
   const startingXI = best.lineupCandidate;
   const chosenFormation = best.key;
 
-  // Captain = highest expected within the starting XI
-  const captain = startingXI.reduce(
-    (b, p) => (p.expectedPoints > (b?.expectedPoints ?? -1) ? p : b),
-    null
-  );
+  const captain = pickCaptain(startingXI, riskProfile);
 
   const totalExpected =
     startingXI.reduce((s, p) => s + (p.expectedPoints ?? 0), 0) +
@@ -310,6 +402,7 @@ export async function buildOptimizedLineup({
     matchday,
     formation: chosenFormation,
     requestedFormation: formationKey,
+    riskProfile: riskProfileKey,
     lineup: startingXI,
     bench: scored
       .filter((p) => !startingXI.find((s) => s.playerId === p.playerId))
@@ -382,7 +475,14 @@ async function loadPlayerSnapshot(playerId) {
  *     formationKey: "auto", budget: 150_000_000
  *   });
  */
-export async function buildBudgetLineup({ seasonId, matchday, formationKey, budget, log }) {
+export async function buildBudgetLineup({
+  seasonId,
+  matchday,
+  formationKey,
+  budget,
+  riskProfileKey = "balanced",
+  log
+}) {
   const isAuto = formationKey === "auto";
   if (!isAuto && !FORMATIONS[formationKey]) {
     const err = new Error(
@@ -449,14 +549,29 @@ export async function buildBudgetLineup({ seasonId, matchday, formationKey, budg
     return {
       ...p,
       expectedPoints: proj?.expectedPoints ?? 0,
-      projectionBreakdown: proj?.breakdown ?? null
+      projectionBreakdown: proj?.breakdown ?? null,
+      matchInfo: p.matchInfo
+        ? {
+            ...p.matchInfo,
+            probHomeWin: proj?.breakdown?.isHome
+              ? proj?.breakdown?.teamWinProbability
+              : 1 - (proj?.breakdown?.teamWinProbability ?? 0),
+            probAwayWin: proj?.breakdown?.isHome
+              ? 1 - (proj?.breakdown?.teamWinProbability ?? 0)
+              : proj?.breakdown?.teamWinProbability
+          }
+        : null
     };
   });
+
+  const riskProfile = resolveRiskProfile(riskProfileKey);
+  const filteredPool = applyRiskFilter(scored, riskProfile);
+  const poolForSearch = filteredPool.length >= 25 ? filteredPool : scored;
 
   const candidateFormations = isAuto ? Object.keys(FORMATIONS) : [formationKey];
   let best = null;
   for (const key of candidateFormations) {
-    const result = pickBestXIWithBudget(scored, FORMATIONS[key], budget);
+    const result = pickBestXIWithBudget(poolForSearch, FORMATIONS[key], budget);
     if (!result) continue;
     if (!best || result.totalExpectedPoints > best.totalExpectedPoints) {
       best = { ...result, formation: key };
@@ -469,6 +584,7 @@ export async function buildBudgetLineup({ seasonId, matchday, formationKey, budg
       matchday,
       formation: formationKey,
       budget,
+      riskProfile: riskProfileKey,
       lineup: [],
       captain: null,
       totalExpectedPoints: 0,
@@ -477,10 +593,7 @@ export async function buildBudgetLineup({ seasonId, matchday, formationKey, budg
     };
   }
 
-  const captain = best.lineup.reduce(
-    (b, p) => (p.expectedPoints > (b?.expectedPoints ?? -1) ? p : b),
-    null
-  );
+  const captain = pickCaptain(best.lineup, riskProfile);
   const totalWithCaptain = best.totalExpectedPoints + (captain ? captain.expectedPoints : 0);
 
   return {
@@ -488,6 +601,7 @@ export async function buildBudgetLineup({ seasonId, matchday, formationKey, budg
     matchday,
     formation: best.formation,
     requestedFormation: formationKey,
+    riskProfile: riskProfileKey,
     budget,
     lineup: best.lineup,
     captain: captain ? { playerId: captain.playerId, name: captain.name } : null,
