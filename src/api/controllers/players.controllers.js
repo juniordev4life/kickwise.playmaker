@@ -1,3 +1,4 @@
+import { bqTable, getBigQueryClient } from "../../config/bigQuery.config.js";
 import { getFirestoreClient } from "../../config/firestore.config.js";
 import { handleErrorResponse, setGeneralResponse } from "../helpers/responseHandler.helpers.js";
 
@@ -28,6 +29,61 @@ const playersQuerySchema = {
  * Query params: position, teamId, minMarketValue, maxMarketValue,
  * minAveragePoints, sortBy, sortDir, limit.
  */
+const playerParamsSchema = {
+  type: "object",
+  required: ["playerId"],
+  properties: {
+    playerId: { type: "string", pattern: "^[0-9]+$" }
+  }
+};
+
+/**
+ * Single-player detail. Combines the latest Firestore snapshot (current
+ * market value, totals, points history) with a 30-day market-value series
+ * pulled from BigQuery.
+ */
+export const getPlayerByIdController = {
+  schema: { params: playerParamsSchema },
+  handler: async (request, reply) => {
+    try {
+      const { playerId } = request.params;
+
+      const db = getFirestoreClient();
+      const doc = await db.collection("players").doc(playerId).get();
+      if (!doc.exists) {
+        return setGeneralResponse(reply, 404, "Not Found", `Player ${playerId} not found`, {});
+      }
+      const player = doc.data();
+
+      const bq = getBigQueryClient();
+      const [rows] = await bq.query({
+        query: `
+          SELECT snapshot_date, market_value, delta_24h, kickbase_total_points
+          FROM \`${bqTable("kickbase_market_values")}\`
+          WHERE player_id = @playerId
+            AND snapshot_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          ORDER BY snapshot_date ASC
+        `,
+        params: { playerId }
+      });
+
+      const marketValueHistory = rows.map((r) => ({
+        date: r.snapshot_date?.value ?? r.snapshot_date,
+        marketValue: r.market_value,
+        delta24h: r.delta_24h,
+        totalPoints: r.kickbase_total_points
+      }));
+
+      return setGeneralResponse(reply, 200, "Success", "Player retrieved", {
+        player,
+        marketValueHistory
+      });
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
 export const listPlayersController = {
   schema: { querystring: playersQuerySchema },
   handler: async (request, reply) => {
