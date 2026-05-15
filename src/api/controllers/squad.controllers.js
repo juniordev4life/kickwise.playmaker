@@ -224,10 +224,10 @@ const submitLineupBodySchema = {
 /**
  * POST /api/v1/squad/:leagueId/lineup — push the chosen XI to Kickbase.
  *
- * Validates that every player in the body is actually in the user's
- * Kickbase squad (so we don't submit hypothetical Bundesliga + Budget
- * players that the user doesn't own). Sorts by position into the
- * canonical slot order Kickbase expects, then forwards to Winger.
+ * Marco's leagues run Arena-style rules: any Bundesliga player can be
+ * fielded each matchday, no ownership constraint. We skip the squad
+ * membership check and just sort the XI into the canonical slot order
+ * Kickbase expects (GK first, then DEF, MID, FWD) before forwarding.
  */
 export const submitLineupController = {
   schema: { params: leagueParamsSchema, body: submitLineupBodySchema },
@@ -235,25 +235,6 @@ export const submitLineupController = {
     try {
       const { leagueId } = request.params;
       const { formation, players: submitted } = request.body;
-
-      // Verify every submitted player is in the user's Kickbase squad.
-      const squadResponse = await callWinger({
-        method: "GET",
-        path: `/api/v1/kickbase/squad/${encodeURIComponent(leagueId)}`,
-        kbToken: request.user.kbToken,
-        log: request.log
-      });
-      const ownedIds = new Set((squadResponse?.players ?? []).map((p) => String(p.playerId)));
-      const missing = submitted.map((p) => String(p.playerId)).filter((id) => !ownedIds.has(id));
-      if (missing.length > 0) {
-        return setGeneralResponse(
-          reply,
-          400,
-          "Bad Request",
-          "Some players are not in your Kickbase squad and can't be fielded.",
-          { missingPlayerIds: missing }
-        );
-      }
 
       // Sort by canonical slot order: GK first, then DEF, MID, FWD.
       const ordered = [...submitted].sort(
