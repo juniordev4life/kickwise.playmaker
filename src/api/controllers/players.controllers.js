@@ -1,6 +1,7 @@
 import { bqTable, getBigQueryClient } from "../../config/bigQuery.config.js";
 import { getFirestoreClient } from "../../config/firestore.config.js";
 import { handleErrorResponse, setGeneralResponse } from "../helpers/responseHandler.helpers.js";
+import { callWinger } from "../services/winger.services.js";
 
 const ALLOWED_POSITIONS = new Set(["GK", "DEF", "MID", "FWD"]);
 const ALLOWED_SORTS = new Set(["marketValue", "averagePoints", "totalPoints", "name"]);
@@ -78,6 +79,28 @@ export const getPlayerByIdController = {
         player,
         marketValueHistory
       });
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
+/**
+ * Multi-season matchday-by-matchday performance for a single player. Lives as
+ * its own endpoint (separate from /:playerId) because it's a Kickbase live
+ * call and we want the player detail page to be able to load it lazily.
+ */
+export const getPlayerPerformanceController = {
+  schema: { params: playerParamsSchema },
+  handler: async (request, reply) => {
+    try {
+      const data = await callWinger({
+        method: "GET",
+        path: `/api/v1/kickbase/competitions/1/players/${encodeURIComponent(request.params.playerId)}/performance`,
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Performance retrieved", data);
     } catch (error) {
       return handleErrorResponse(reply, error, request);
     }
