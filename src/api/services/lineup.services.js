@@ -260,37 +260,36 @@ function pickCaptain(startingXI, profile) {
  * @param {number} [topK=10] candidate breadth per position
  * @returns {{ lineup: Array<object>, totalExpectedPoints: number, totalMarketValue: number } | null}
  */
-function pickBestXIWithBudget(pool, formation, budget, topK = 8) {
+function pickBestXIWithBudget(pool, formation, budget) {
   const byPos = { GK: [], DEF: [], MID: [], FWD: [] };
   for (const p of pool) {
     if (!byPos[p.position]) continue;
     if ((p.expectedPoints ?? 0) <= 0) continue;
     byPos[p.position].push(p);
   }
-  // For each position build a candidate pool that mixes two ranking
-  // strategies so the brute-force step has both "the best stars" and
-  // "the best value picks" to compose from. Without the value picks the
-  // top-K by expected is dominated by €40M+ defenders that can't fit
-  // under realistic budgets like 150M.
+  // Cap the per-position pool at MAX_POOL — the brute-force step is
+  // O(N_DEF^4 × N_MID^5 × N_FWD^3) and explodes past 10–12 per pos.
+  // Mix top-by-expected with top-by-value-per-euro so both stars and
+  // cheap value picks are in the search.
+  const MAX_POOL = 10;
   function buildPool(arr, slotCount) {
-    const slotCountSafe = Math.max(1, slotCount);
-    const byExpected = [...arr].sort((a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0));
-    const topExpected = byExpected.slice(0, Math.max(topK, slotCountSafe + 4));
-    // Value-per-euro picks. Filter to players with non-trivial expected
-    // points so a 0.1-pts €0.1M backup doesn't crowd out real options.
-    const minExpected = byExpected[Math.max(0, slotCountSafe * 4)]?.expectedPoints ?? 0;
-    const threshold = Math.max(20, minExpected * 0.4);
+    if (arr.length <= MAX_POOL) return arr;
+    const byExpected = [...arr].sort(
+      (a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0)
+    );
+    const halfExpected = byExpected.slice(0, Math.max(slotCount, Math.floor(MAX_POOL / 2)));
+    const threshold = (byExpected[Math.max(0, slotCount * 3)]?.expectedPoints ?? 0) * 0.4;
     const byValue = [...arr]
       .filter((p) => (p.expectedPoints ?? 0) >= threshold && (p.marketValue ?? 0) > 0)
       .sort(
         (a, b) =>
           (b.expectedPoints ?? 0) / Math.max(1, b.marketValue) -
           (a.expectedPoints ?? 0) / Math.max(1, a.marketValue)
-      )
-      .slice(0, Math.max(topK, slotCountSafe + 4));
+      );
     const seen = new Set();
     const merged = [];
-    for (const p of [...topExpected, ...byValue]) {
+    for (const p of [...halfExpected, ...byValue]) {
+      if (merged.length >= MAX_POOL) break;
       const key = String(p.playerId);
       if (seen.has(key)) continue;
       seen.add(key);
