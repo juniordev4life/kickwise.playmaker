@@ -274,9 +274,7 @@ function pickBestXIWithBudget(pool, formation, budget) {
   const MAX_POOL = 10;
   function buildPool(arr, slotCount) {
     if (arr.length <= MAX_POOL) return arr;
-    const byExpected = [...arr].sort(
-      (a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0)
-    );
+    const byExpected = [...arr].sort((a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0));
     const halfExpected = byExpected.slice(0, Math.max(slotCount, Math.floor(MAX_POOL / 2)));
     const threshold = (byExpected[Math.max(0, slotCount * 3)]?.expectedPoints ?? 0) * 0.4;
     const byValue = [...arr]
