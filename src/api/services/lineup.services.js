@@ -274,9 +274,7 @@ function pickBestXIWithBudget(pool, formation, budget, topK = 8) {
   // under realistic budgets like 150M.
   function buildPool(arr, slotCount) {
     const slotCountSafe = Math.max(1, slotCount);
-    const byExpected = [...arr].sort(
-      (a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0)
-    );
+    const byExpected = [...arr].sort((a, b) => (b.expectedPoints ?? 0) - (a.expectedPoints ?? 0));
     const topExpected = byExpected.slice(0, Math.max(topK, slotCountSafe + 4));
     // Value-per-euro picks. Filter to players with non-trivial expected
     // points so a 0.1-pts €0.1M backup doesn't crowd out real options.
