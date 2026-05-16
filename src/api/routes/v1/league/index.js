@@ -1,4 +1,5 @@
 import {
+  getLeaguePointsHistoryController,
   getLeagueRankingController,
   getMyLeaguesController
 } from "../../../controllers/league.controllers.js";
@@ -14,5 +15,11 @@ export default async function leagueRoutes(fastify) {
     schema: getLeagueRankingController.schema,
     preHandler: [requireUser],
     handler: getLeagueRankingController.handler
+  });
+
+  fastify.get("/:leagueId/points-history", {
+    schema: getLeaguePointsHistoryController.schema,
+    preHandler: [requireUser],
+    handler: getLeaguePointsHistoryController.handler
   });
 }
