@@ -33,11 +33,11 @@ const STATUS_PROB_CAPS = {
 // probability the optimizer can multiply into expected points. Players
 // flagged Ausgeschlossen drop to 0 → never picked.
 const KICKBASE_S11_TO_PROBABILITY = {
-  1: 0.95, // Sicher
-  2: 0.8, // Erwartet
-  3: 0.5, // Unsicher
-  4: 0.2, // Unwahrscheinlich
-  5: 0.0 // Ausgeschlossen
+  1: 0.95, // Sicher          → recommended
+  2: 0.8, // Erwartet         → recommended
+  3: 0.5, // Unsicher          → recommended (last realistic option)
+  4: 0.0, // Unwahrscheinlich  → excluded (not first option per Kickbase)
+  5: 0.0 // Ausgeschlossen    → excluded (no realistic chance)
 };
 
 function adjustedStartingProb(player) {
