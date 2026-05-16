@@ -27,6 +27,28 @@ export const getSquadController = {
   }
 };
 
+/**
+ * GET /api/v1/squad/:leagueId/budget — proxies the user's current
+ * Kickbase budget so the UI can show it instead of asking the user to
+ * type their cap.
+ */
+export const getMyBudgetController = {
+  schema: { params: leagueParamsSchema },
+  handler: async (request, reply) => {
+    try {
+      const data = await callWinger({
+        method: "GET",
+        path: `/api/v1/kickbase/leagues/${encodeURIComponent(request.params.leagueId)}/me/budget`,
+        kbToken: request.user.kbToken,
+        log: request.log
+      });
+      return setGeneralResponse(reply, 200, "Success", "Budget", data ?? {});
+    } catch (error) {
+      return handleErrorResponse(reply, error, request);
+    }
+  }
+};
+
 const lineupQuerySchema = {
   type: "object",
   properties: {

@@ -27,12 +27,31 @@ const STATUS_PROB_CAPS = {
   unknown: 1.0
 };
 
+// Kickbase encodes their S11-Wahrscheinlichkeit on a 1..5 scale with the
+// *opposite* polarity of what you'd expect: 1 = Sicher (certain starter),
+// 5 = Ausgeschlossen (no chance). This mapping converts to a 0..1
+// probability the optimizer can multiply into expected points. Players
+// flagged Ausgeschlossen drop to 0 → never picked.
+const KICKBASE_S11_TO_PROBABILITY = {
+  1: 0.95, // Sicher
+  2: 0.8, // Erwartet
+  3: 0.5, // Unsicher
+  4: 0.2, // Unwahrscheinlich
+  5: 0.0 // Ausgeschlossen
+};
+
 function adjustedStartingProb(player) {
   const cap = STATUS_PROB_CAPS[player.status] ?? STATUS_PROB_CAPS.unknown;
-  // Kickbase reports `prob` on a 0..4 scale (3 = likely start, 4 = certain).
-  // Normalise into a 0..1 probability before applying the status cap.
-  const raw = Number(player.startingProbability ?? 2.5);
-  const baseProb = raw > 1 ? Math.min(1, Math.max(0, raw / 4)) : Math.min(1, Math.max(0, raw));
+  const raw = Number(player.startingProbability);
+  let baseProb;
+  if (Number.isFinite(raw) && raw >= 1 && raw <= 5) {
+    baseProb = KICKBASE_S11_TO_PROBABILITY[Math.round(raw)] ?? 0.5;
+  } else if (Number.isFinite(raw) && raw > 0 && raw <= 1) {
+    // Already a normalised 0..1 number — accept as-is.
+    baseProb = raw;
+  } else {
+    baseProb = 0.65;
+  }
   return Math.min(baseProb, cap);
 }
 
